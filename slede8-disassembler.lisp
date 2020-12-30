@@ -1,3 +1,13 @@
+;; Disassembler for the SLEDE8 binary format.
+;; Copyright 2020 Peder O. Klingenberg
+;; License: MIT
+
+(defpackage #:slede8-disassembler
+  (:use #:cl)
+  (:export #:slede8-disassembler))
+
+(in-package #:slede8-disassembler)
+
 (defparameter *instructions*
   '((#x0 stopp decoder-none)
     (#x1 sett decoder-reg+byte)
@@ -18,39 +28,73 @@
 	  (#x1 . skriv))
      decoder-reg)
     (#x7 ((#x0 . lik)
-	    (#x1 . ulik)
-	    (#x2 . me)
-	    (#x3 . mel)
-	    (#x4 . se)
+	  (#x1 . ulik)
+	  (#x2 . me)
+	  (#x3 . mel)
+	  (#x4 . se)
 	  (#x5 . sel))
      decoder-reg+reg)
     (#x8 hopp decoder-paddr)
     (#x9 bhopp decoder-paddr)
     (#xa tur decoder-paddr)
     (#xb retur decoder-none)
-    (#xc nope decoder-none)))
+    (#xc nope decoder-none))
+  "Format: ((<nib1> <instr> <argument-parse-function>)
+            ...)
+<instr> can be a mnemonic assembly instruction, or if the same
+first nibble is common across several instructions, a list of
+pairs: ((<nib2> . <mnemonic>)
+        ...)
+")
 
-(defvar *label-counter* 0)
-(defvar *labels* nil)
+(defvar *label-counter* 0 "Incremented for each label, to make them unique")
+(defvar *labels* nil
+  "Debugging aid, after a run, this contins a list of pairs
+((<label> . <addr>) ... )")
+
 (define-condition invalid-address () ())
 
-(defun slede8-disassembler (filename &key force-data-ranges)
-  (let* ((*label-counter* 0)
-	 (s8-data (with-open-file (s filename :element-type 'unsigned-byte)
-		    (let ((data (make-array (file-length s) :element-type 'unsigned-byte)))
-		      (read-sequence data s)
-		      data)))
-	 program
-	 program-length
-	 labels)
-    (unless (equalp #(#x2E #x53 #x4C #x45 #x44 #x45 #x38) (subseq s8-data 0 7)) ; ".SLEDE8"
-      (error "Not a valid slede8 (.s8) binary file"))
-    (setq s8-data (coerce (subseq s8-data 7) 'list))
-    (setq program-length (length s8-data))
+(defun slede8-disassembler (filename
+			    &key
+			      force-data-ranges
+			      (output-stream *standard-output*)
+			      (include-address-in-output t))
+  "Disassembles the binary file FILENAME.  The disassembled program is printed
+to OUTPUT-STREAM (default stdout).  If INCLUDE-ADDRESS-IN-OUTPUT is non-NIL,
+the address of each instruction (in hex) is printed at the beginning of each
+line.  FORCE-DATA-RANGES is a list of elements where each element is either a
+pair of addresses (<lower-inclusive> . <upper-exclusive>) or a single
+address <lower-inclusive> (with an implied upper bound of infinity),
+indicating ranges of addresses that have been manually determined to contain
+data, not code."
+  (let* ((*label-counter* 0)  ;; Reset counter at every run.
+	 (s8-data (get-s8-byte-list filename)))
+    (multiple-value-bind (instruction-stream labels)
+	(s8-disassemble s8-data force-data-ranges)
+      (setq *labels* labels) ;; For easy access post-run.
+      (let ((program (insert-labels instruction-stream labels)))
+	(output-slede8 program :stream output-stream :include-address include-address-in-output)))))
+
+(defun get-s8-byte-list (filename)
+  "Read bytes from filename, discard file header and return byte list."
+  (with-open-file (s filename :element-type 'unsigned-byte)
+    (let ((data (make-array (file-length s) :element-type 'unsigned-byte)))
+      (read-sequence data s)
+      (unless (equalp #(#x2E #x53 #x4C #x45 #x44 #x45 #x38) (subseq data 0 7)) ; ".SLEDE8"
+	(error "Not a valid slede8 (.s8) binary file"))
+      (coerce (subseq data 7) 'list))))
+
+(defun s8-disassemble (s8-byte-list force-data-ranges)
+  "Decode S8-BYTE-LIST into a stream of instructions and .DATA-statements,
+honoring FORCE-DATA-RANGES.  Returns a list of instructions and a list of
+detected labels, both in ascending address order."
+  (let ((program-length (length s8-byte-list))
+	program
+	labels)
     (loop with data-array = nil
-	  with s8-data = s8-data
+	  with s8-byte-list = s8-byte-list
 	  with address = 0
-          for ibyte = (pop s8-data)
+          for ibyte = (pop s8-byte-list)
 	  for nib1 = (and ibyte (logand #x0f ibyte))
 	  for nib2 = (and ibyte (ash ibyte -4))
 	  for instr = (unless (address-in-ranges address force-data-ranges)
@@ -59,7 +103,7 @@
 			    (setq i (copy-list i))
 			    (setf (car i) (cdr (assoc nib2 (car i)))))
 			  i))
-	  for dbyte = (and instr (pop s8-data))
+	  for dbyte = (and instr (pop s8-byte-list))
 	  for nib3 = (and dbyte (logand #x0f dbyte))
 	  for nib4 = (and dbyte (ash dbyte -4))
 	  while ibyte
@@ -72,7 +116,7 @@
 	  do
 	     (handler-case
 		 (multiple-value-bind (instruction label)
-		     (decode-instruction instr labels program-length nib2 nib3 nib4 dbyte)
+		     (decode-instruction instr labels program-length nib2 nib3 nib4)
 		   (when data-array
 		     (progn
 		       (push (append (list (- address (length data-array))
@@ -90,60 +134,61 @@
 		 (push ibyte data-array)
 		 (incf address)
 		 (when dbyte ;; put the second byte back.
-		   (push dbyte s8-data))))
+		   (push dbyte s8-byte-list))))
           end	    
 	  finally
 	     (when data-array
                (progn
 		 (push (append (list (- address (length data-array))
-					   '.data)
-				     (nreverse data-array))
-			     program)
+				     '.data)
+			       (nreverse data-array))
+		       program)
 		 (setq data-array nil))))
-    (setq *labels* (sort labels #'< :key #'cdr))
-    (values (insert-labels (nreverse program)
-			   *labels*)
+    (values (nreverse program)
+	    (sort labels #'< :key #'cdr)
 	    program-length)))
 
-(defun insert-labels (program labels)
-  (values
-   (loop with program = program
-	 with labels = labels
-	 with next-label = (pop labels)
-	 with data-stmt-length
-	 with address = 0
-	 for statement = (pop program)
-	 for disass-address = (and statement (pop statement))
-	 for stmt-length = (if (eq (car statement) '.data)
-			       (length (cdr statement))
-			       2)
-	 while statement
-	 unless (= address disass-address)
-	   do (warn "Counted address ~x, received address ~x from disassembly. Statement ~s~%"
-		    address disass-address statement)
-	 if (and next-label
-		 (= address (cdr next-label)))
-	   collect (car next-label)
-	   and do (setq next-label (pop labels))
-	 if (and next-label
-		 (< (cdr next-label) (+ address stmt-length)))
-	   ;; data statement that needs to be split
-	   do (setq data-stmt-length (- (cdr next-label)
-					address))
-	   and collect (cons address
-			     (subseq statement 0 (1+ ;; for the initial .data
-						  data-stmt-length)))
-	   and do (incf address data-stmt-length)
-	   and collect (car next-label)
-	   and do (setq next-label (pop labels))
-		  (push (append (list address '.data) (subseq statement (1+ data-stmt-length))) program)
-	 else
-	   ;; regular statement
-	   collect (cons address statement)
-	   and do (incf address stmt-length))
-   labels))
+(defun insert-labels (instruction-stream labels)
+  "Merges INSTRUCTION-STREAM and LABELS, splitting .DATA statements in
+INSTRUCTION-STREAM as necessary.  Returns the merged program."
+  (loop with program = instruction-stream        
+	with next-label = (pop labels)
+	with data-stmt-length
+	with address = 0
+	for statement = (pop program)
+	for disass-address = (and statement (pop statement))
+	for stmt-length = (if (eq (car statement) '.data)
+			      (length (cdr statement))
+			      2)
+	while statement
+	unless (= address disass-address)
+	  do (warn "Counted address ~x, received address ~x from disassembly. Statement ~s~%"
+		   address disass-address statement)
+	if (and next-label
+		(= address (cdr next-label)))
+	  collect (car next-label)
+	  and do (setq next-label (pop labels))
+	if (and next-label
+		(< (cdr next-label) (+ address stmt-length)))
+	  ;; data statement that needs to be split
+	  do (setq data-stmt-length (- (cdr next-label)
+				       address))
+	  and collect (cons address
+			    (subseq statement 0 (1+ ;; for the initial .data
+						 data-stmt-length)))
+	  and do (incf address data-stmt-length)
+	  and collect (car next-label)
+	  and do (setq next-label (pop labels))
+		 (push (append (list address '.data) (subseq statement (1+ data-stmt-length))) program)
+	else
+	  ;; regular statement
+	  collect (cons address statement)
+	  and do (incf address stmt-length)))
 
 (defun output-slede8 (program &key (stream *standard-output*) (include-address t))
+  "Prints PROGRAM to STREAM, optionally with each line preceeded by its address.
+Without address prefixes, output should be suitable to paste to
+https://slede8.npst.no/"
   (loop for statement in program
 	if (consp statement)
 	  do (let ((address (pop statement)))
@@ -164,37 +209,52 @@
 	   (terpri stream)))
 
 (defun address-in-ranges (address ranges)
+  "Checks if ADDRESS falls within any of the RANGES.
+Each range in RANGES is either a pair (lower-inclusive . upper-exclusive)
+or a single address denoting the inclusive lower bound of an infinite range.
+Returns non-NIL iff ADDRESS is part of any range."
   (loop for range in ranges
 	do
 	   (cond ((and (listp range)
-		       (<= (first range) address (second range)))
+		       (<= (car range) address (1- (cdr range))))
 		  (return range))
 		 ((and (numberp range)
 		       (<= range address))
 		  (return range)))))
 
-(defun decode-instruction (instr labels program-length nib2 nib3 nib4 arg-byte)
+(defun decode-instruction (instr labels program-length nib2 nib3 nib4)
+  "Parses the argument nibbles for a given instruction.
+Returns two values. 1) A list (MNEMONIC [arg1 [arg2]]) for the instruction,
+2) a freshly detected label address or NIL."
   (let ((decoder (second instr)))
     (multiple-value-bind (args label)
-	(funcall decoder labels program-length nib2 nib3 nib4 arg-byte)
+	(funcall decoder labels program-length nib2 nib3 nib4)
       (values (cons (car instr) args)
 	      label))))
 
-(defun decoder-none (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore labels program-length nib2 nib3 nib4 arg-byte))
+(defmacro def-decoder (name &body body)
+  "Define a decoder function.  Function name will be \"DECODER-\"
+and the NAME argument.  Arguments to the function will be
+(LABELS PROGRAM-LENGTH NIB2 NIB3 NIB4)
+LABELS is the labels existing so far, for reuse.
+PROGRAM-LENGTH is for signalling a condition if a label address is
+out of bounds.
+NIB{2,3,4} are the nibbles of the instruction."
+  `(defun ,(intern (format nil "DECODER-~a" name)) (labels program-length nib2 nib3 nib4)
+     (declare (ignorable labels program-length nib2 nib3 nib4))
+     ,@body))
+
+(def-decoder none
   nil)
 
-(defun decoder-reg+byte (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore labels program-length nib3 nib4))
-  (list (format nil "r~d" nib2) arg-byte))
+(def-decoder reg+byte
+  (list (format nil "r~d" nib2) nib3))
 
-(defun decoder-reg+regbyte (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore labels program-length nib4 arg-byte))
+(def-decoder reg+regbyte
   (list (format nil "r~d" nib2)
 	(format nil "r~d" nib3)))
 
-(defun decoder-paddr (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore arg-byte))
+(def-decoder paddr
   (let ((addr (logior (ash nib4 8) (ash nib3 4) nib2)))
     (when (< (1- program-length) addr)
       (signal 'invalid-address))
@@ -205,8 +265,7 @@
 	      (unless existing-label
 		(cons label addr))))))
 
-(defun decoder-daddr (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore arg-byte))
+(def-decoder daddr
   (let ((addr (logior (ash nib4 8) (ash nib3 4) nib2)))
     (when (< (1- program-length) addr)
       (signal 'invalid-address))
@@ -217,12 +276,10 @@
 	      (unless existing-label
 		(cons label addr))))))
 
-(defun decoder-reg (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore labels program-length nib2 nib4 arg-byte))
+(def-decoder reg
   (list (format nil "r~d" nib3)))
 
-(defun decoder-reg+reg (labels program-length nib2 nib3 nib4 arg-byte)
-  (declare (ignore labels program-length nib2 arg-byte))
+(def-decoder reg+reg 
   (list (format nil "r~d" nib3)
 	(format nil "r~d" nib4)))
 
