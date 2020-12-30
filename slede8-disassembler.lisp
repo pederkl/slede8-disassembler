@@ -47,7 +47,6 @@ pairs: ((<nib2> . <mnemonic>)
         ...)
 ")
 
-(defvar *label-counter* 0 "Incremented for each label, to make them unique")
 (defvar *labels* nil
   "Debugging aid, after a run, this contins a list of pairs
 ((<label> . <addr>) ... )")
@@ -67,13 +66,12 @@ pair of addresses (<lower-inclusive> . <upper-exclusive>) or a single
 address <lower-inclusive> (with an implied upper bound of infinity),
 indicating ranges of addresses that have been manually determined to contain
 data, not code."
-  (let* ((*label-counter* 0)  ;; Reset counter at every run.
-	 (s8-data (get-s8-byte-list filename)))
+  (let* ((s8-data (get-s8-byte-list filename)))
     (multiple-value-bind (instruction-stream labels)
 	(s8-disassemble s8-data force-data-ranges)
       (setq *labels* labels) ;; For easy access post-run.
       (let ((program (insert-labels instruction-stream labels)))
-	(output-slede8 program :stream output-stream :include-address include-address-in-output)))))
+	(output-slede8 program output-stream include-address-in-output)))))
 
 (defun get-s8-byte-list (filename)
   "Read bytes from filename, discard file header and return byte list."
@@ -94,6 +92,7 @@ detected labels, both in ascending address order."
     (loop with data-array = nil
 	  with s8-byte-list = s8-byte-list
 	  with address = 0
+	  with label-counter = 0
           for ibyte = (pop s8-byte-list)
 	  for nib1 = (and ibyte (logand #x0f ibyte))
 	  for nib2 = (and ibyte (ash ibyte -4))
@@ -115,8 +114,8 @@ detected labels, both in ascending address order."
           else  ;; We may have an instruction
 	  do
 	     (handler-case
-		 (multiple-value-bind (instruction label)
-		     (decode-instruction instr labels program-length nib2 nib3 nib4)
+		 (multiple-value-bind (instruction target-address target-type)
+		     (decode-instruction instr nib2 nib3 nib4)
 		   (when data-array
 		     (progn
 		       (push (append (list (- address (length data-array))
@@ -126,8 +125,15 @@ detected labels, both in ascending address order."
 		       (setq data-array nil)))
 		   (push (cons address instruction) program)
 		   (incf address 2)
-		   (when label
-		     (push label labels)))
+		   (when target-address
+		     (when (< (1- program-length) target-address)
+		       (signal 'invalid-address))
+		     (let* ((existing-label (car (rassoc target-address labels)))
+			    (label (or existing-label
+				       (format nil "~a~d" target-type (incf label-counter)))))
+		       (unless existing-label
+			 (push (cons label target-address) labels))
+		       (setf (second instruction) label))))
 	       (invalid-address ()
 		 ;; Tried to jump out of bounds, so this couldn't have
 		 ;; been an instruction after all, must be data
@@ -185,7 +191,7 @@ INSTRUCTION-STREAM as necessary.  Returns the merged program."
 	  collect (cons address statement)
 	  and do (incf address stmt-length)))
 
-(defun output-slede8 (program &key (stream *standard-output*) (include-address t))
+(defun output-slede8 (program stream include-address)
   "Prints PROGRAM to STREAM, optionally with each line preceeded by its address.
 Without address prefixes, output should be suitable to paste to
 https://slede8.npst.no/"
@@ -222,26 +228,23 @@ Returns non-NIL iff ADDRESS is part of any range."
 		       (<= range address))
 		  (return range)))))
 
-(defun decode-instruction (instr labels program-length nib2 nib3 nib4)
+(defun decode-instruction (instr nib2 nib3 nib4)
   "Parses the argument nibbles for a given instruction.
 Returns two values. 1) A list (MNEMONIC [arg1 [arg2]]) for the instruction,
-2) a freshly detected label address or NIL."
+2) the address referenced in the instruction or NIL."
   (let ((decoder (second instr)))
-    (multiple-value-bind (args label)
-	(funcall decoder labels program-length nib2 nib3 nib4)
+    (multiple-value-bind (args addr label-type)
+	(funcall decoder nib2 nib3 nib4)
       (values (cons (car instr) args)
-	      label))))
+	      addr
+	      label-type))))
 
 (defmacro def-decoder (name &body body)
   "Define a decoder function.  Function name will be \"DECODER-\"
 and the NAME argument.  Arguments to the function will be
-(LABELS PROGRAM-LENGTH NIB2 NIB3 NIB4)
-LABELS is the labels existing so far, for reuse.
-PROGRAM-LENGTH is for signalling a condition if a label address is
-out of bounds.
-NIB{2,3,4} are the nibbles of the instruction."
-  `(defun ,(intern (format nil "DECODER-~a" name)) (labels program-length nib2 nib3 nib4)
-     (declare (ignorable labels program-length nib2 nib3 nib4))
+(NIB2 NIB3 NIB4), the nibbles of the instruction, most significant first"
+  `(defun ,(intern (format nil "DECODER-~a" name)) (nib2 nib3 nib4)
+     (declare (ignorable nib2 nib3 nib4))
      ,@body))
 
 (def-decoder none
@@ -254,27 +257,20 @@ NIB{2,3,4} are the nibbles of the instruction."
   (list (format nil "r~d" nib2)
 	(format nil "r~d" nib3)))
 
+(defun address-decoder (nib2 nib3 nib4)
+  (logior (ash nib4 8) (ash nib3 4) nib2))
+
 (def-decoder paddr
-  (let ((addr (logior (ash nib4 8) (ash nib3 4) nib2)))
-    (when (< (1- program-length) addr)
-      (signal 'invalid-address))
-    (let* ((existing-label (car (rassoc addr labels)))
-	   (label (or existing-label
-		      (format nil "code~d" (incf *label-counter*)))))
-      (values (list label)
-	      (unless existing-label
-		(cons label addr))))))
+  (let ((addr (address-decoder nib2 nib3 nib4)))
+    (values (list addr)
+	    addr
+	    "code")))
 
 (def-decoder daddr
-  (let ((addr (logior (ash nib4 8) (ash nib3 4) nib2)))
-    (when (< (1- program-length) addr)
-      (signal 'invalid-address))
-    (let* ((existing-label (car (rassoc addr labels)))
-	   (label (or existing-label
-		      (format nil "data~d" (incf *label-counter*)))))
-      (values (list label)
-	      (unless existing-label
-		(cons label addr))))))
+  (let ((addr (address-decoder nib2 nib3 nib4)))
+    (values (list addr)
+	    addr
+	    "data")))
 
 (def-decoder reg
   (list (format nil "r~d" nib3)))
