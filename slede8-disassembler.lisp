@@ -55,7 +55,7 @@ label merging, so labels may further split the data
 statements.")
 
 (defvar *labels* nil
-  "Debugging aid, after a run, this contins a list of pairs
+  "Debugging aid.  After a run, this contains a list of pairs
 ((<label> . <addr>) ... )")
 
 (define-condition invalid-address () ())
@@ -81,7 +81,7 @@ data, not code."
 	(output-slede8 program output-stream include-address-in-output)))))
 
 (defun get-s8-byte-list (filename)
-  "Read bytes from filename, discard file header and return byte list."
+  "Read bytes from FILENAME, discard file header and return byte list."
   (with-open-file (s filename :element-type 'unsigned-byte)
     (let ((data (make-array (file-length s) :element-type 'unsigned-byte)))
       (read-sequence data s)
