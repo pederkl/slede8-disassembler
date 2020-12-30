@@ -47,6 +47,13 @@ pairs: ((<nib2> . <mnemonic>)
         ...)
 ")
 
+(defparameter *data-max-length* nil
+  "Max bytes to have in a single data statement.
+Limit is just to keep the generated source readable.
+set to NIL for no limit.  This is applied prior to
+label merging, so labels may further split the data
+statements.")
+
 (defvar *labels* nil
   "Debugging aid, after a run, this contins a list of pairs
 ((<label> . <addr>) ... )")
@@ -111,18 +118,24 @@ detected labels, both in ascending address order."
 	    do
 	       (push ibyte data-array)
 	       (incf address)
+	       (when (and *data-max-length*
+			  (<= *data-max-length* (length data-array)))
+		 (push (append (list (- address (length data-array))
+				     '.data)
+			       (nreverse data-array))
+		       program)
+		 (setq data-array nil))
           else  ;; We may have an instruction
 	  do
 	     (handler-case
 		 (multiple-value-bind (instruction target-address target-type)
 		     (decode-instruction instr nib2 nib3 nib4)
 		   (when data-array
-		     (progn
-		       (push (append (list (- address (length data-array))
-					   '.data)
-				     (nreverse data-array))
-			     program)
-		       (setq data-array nil)))
+		     (push (append (list (- address (length data-array))
+					 '.data)
+				   (nreverse data-array))
+			   program)
+		     (setq data-array nil))
 		   (push (cons address instruction) program)
 		   (incf address 2)
 		   (when target-address
@@ -144,12 +157,11 @@ detected labels, both in ascending address order."
           end	    
 	  finally
 	     (when data-array
-               (progn
-		 (push (append (list (- address (length data-array))
-				     '.data)
-			       (nreverse data-array))
-		       program)
-		 (setq data-array nil))))
+               (push (append (list (- address (length data-array))
+				   '.data)
+			     (nreverse data-array))
+		     program)
+	       (setq data-array nil)))
     (values (nreverse program)
 	    (sort labels #'< :key #'cdr)
 	    program-length)))
