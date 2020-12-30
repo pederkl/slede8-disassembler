@@ -1,0 +1,65 @@
+.DATA 0xDD
+STOPP
+
+.DATA 0xDD
+SETT r14, 0x4
+
+.DATA 0xDD
+SETT r14, r3
+
+.DATA 0xDD
+FINN label
+
+.DATA 0xDD
+LAST r3
+.DATA 0xDD
+LAGR r4
+
+.DATA 0xDD
+OG r15,r0
+.DATA 0xDD
+ELLER r15,r0
+.DATA 0xDD
+XELLER r15,r0
+.DATA 0xDD
+VSKIFT r15,r0
+.DATA 0xDD
+HSKIFT r15,r0
+.DATA 0xDD
+PLUSS r15,r0
+.DATA 0xDD
+MINUS r15,r0
+
+.DATA 0xDD
+LES r0
+.DATA 0xDD
+SKRIV r0
+
+.DATA 0xDD
+LIK r15, r0
+.DATA 0xDD
+ULIK r15, r0
+.DATA 0xDD
+ME r15, r0
+.DATA 0xDD
+MEL r15, r0
+.DATA 0xDD
+SE r15, r0
+.DATA 0xDD
+SEL r15, r0
+
+.DATA 0xDD
+HOPP label
+.DATA 0xDD
+BHOPP label
+.DATA 0xDD
+TUR another_label
+.DATA 0xDD
+RETUR
+.DATA 0xDD
+NOPE
+.DATA 0xDD
+label:
+.DATA 0xde, 0xad, 0xbe, 0xef
+another_label:
+.DATA 0xca, 0xfe, 0xba, 0xbe
