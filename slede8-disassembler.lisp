@@ -186,7 +186,8 @@ INSTRUCTION-STREAM as necessary.  Returns the merged program."
 		(= address (cdr next-label)))
 	  collect (car next-label)
 	  and do (setq next-label (pop labels))
-	if (and next-label
+	if (and (eq (car statement) '.data)
+		next-label
 		(< (cdr next-label) (+ address stmt-length)))
 	  ;; data statement that needs to be split
 	  do (setq data-stmt-length (- (cdr next-label)
@@ -199,8 +200,14 @@ INSTRUCTION-STREAM as necessary.  Returns the merged program."
 	  and do (setq next-label (pop labels))
 		 (push (append (list address '.data) (subseq statement (1+ data-stmt-length))) program)
 	else
+	  do (if (and next-label
+		      (< (cdr next-label) (+ address stmt-length)))
+		 (progn
+		   (warn "Misaligned label ~a pointing to the middle of instruction ~s.~%"
+			 next-label (cons disass-address statement))
+		   (setq next-label (pop labels))))
 	  ;; regular statement
-	  collect (cons address statement)
+	  and collect (cons address statement)
 	  and do (incf address stmt-length)))
 
 (defun output-slede8 (program stream include-address)
