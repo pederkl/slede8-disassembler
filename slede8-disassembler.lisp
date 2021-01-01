@@ -108,7 +108,7 @@ detected labels, both in ascending address order."
                           (when (consp (car i))
 			    (setq i (copy-list i))
 			    (setf (car i) (cdr (assoc nib2 (car i)))))
-			  i))
+			  (and (car i) i)))
 	  for dbyte = (and instr (pop s8-byte-list))
 	  for nib3 = (and dbyte (logand #x0f dbyte))
 	  for nib4 = (and dbyte (ash dbyte -4))
