@@ -64,7 +64,8 @@ statements.")
 			    &key
 			      force-data-ranges
 			      (output-stream *standard-output*)
-			      (include-address-in-output t))
+			      (include-address-in-output t)
+			      (byte-transforms))
   "Disassembles the binary file FILENAME.  The disassembled program is printed
 to OUTPUT-STREAM (default stdout).  If INCLUDE-ADDRESS-IN-OUTPUT is non-NIL,
 the address of each instruction (in hex) is printed at the beginning of each
@@ -72,22 +73,37 @@ line.  FORCE-DATA-RANGES is a list of elements where each element is either a
 pair of addresses (<lower-inclusive> . <upper-exclusive>) or a single
 address <lower-inclusive> (with an implied upper bound of infinity),
 indicating ranges of addresses that have been manually determined to contain
-data, not code."
-  (let* ((s8-data (get-s8-byte-list filename)))
+data, not code.  BYTE-TRANSFORMS is a list of elements (<range> . <transform>)
+where range is the same format as for FORCE-DATA-RANGES, and transform
+is a designator for a function with two parameters, the address and the byte,
+returning a byte."
+  (let* ((s8-data (get-s8-byte-list filename byte-transforms)))
     (multiple-value-bind (instruction-stream labels)
 	(s8-disassemble s8-data force-data-ranges)
       (setq *labels* labels) ;; For easy access post-run.
       (let ((program (insert-labels instruction-stream labels)))
 	(output-slede8 program output-stream include-address-in-output)))))
 
-(defun get-s8-byte-list (filename)
-  "Read bytes from FILENAME, discard file header and return byte list."
+(defun get-s8-byte-list (filename byte-transforms)
+  "Read bytes from FILENAME, discard file header and return byte list,
+modified by byte-transforms if necessary."
   (with-open-file (s filename :element-type 'unsigned-byte)
     (let ((data (make-array (file-length s) :element-type 'unsigned-byte)))
       (read-sequence data s)
       (unless (equalp #(#x2E #x53 #x4C #x45 #x44 #x45 #x38) (subseq data 0 7)) ; ".SLEDE8"
 	(error "Not a valid slede8 (.s8) binary file"))
-      (coerce (subseq data 7) 'list))))
+      (let ((bytes (coerce (subseq data 7) 'list)))
+	(unless byte-transforms
+	  (return-from get-s8-byte-list bytes))
+	(loop for address from 0
+	      for byte in bytes
+	      collect (transform-byte address byte byte-transforms))))))
+
+(defun transform-byte (address byte byte-transforms)
+  (let ((transform (transform-for-address address byte-transforms)))
+    (if transform
+	(funcall transform address byte)
+	byte)))
 
 (defun s8-disassemble (s8-byte-list force-data-ranges)
   "Decode S8-BYTE-LIST into a stream of instructions and .DATA-statements,
@@ -239,13 +255,27 @@ Each range in RANGES is either a pair (lower-inclusive . upper-exclusive)
 or a single address denoting the inclusive lower bound of an infinite range.
 Returns non-NIL iff ADDRESS is part of any range."
   (loop for range in ranges
-	do
-	   (cond ((and (listp range)
-		       (<= (car range) address (1- (cdr range))))
-		  (return range))
-		 ((and (numberp range)
-		       (<= range address))
-		  (return range)))))
+	when (address-in-range address range)
+	  return range))
+
+(defun transform-for-address (address byte-transforms)
+  "Returns the transform, if any, for the byte at address ADDRESS,
+according to the BYTE-TRANSFORMS list, which is a list of
+(<range> . <transform>) pairs."
+  (loop for transform in byte-transforms
+        when (address-in-range address (car transform))
+	  return (cdr transform)))
+
+(defun address-in-range (address range)
+  "Returns non-NIL iff ADDRESS falls within RANGE.
+RANGE is either a pair (lower-inclusive . upper-exclusive)
+or a single address denoting the inclusive lower bound of an infinite range."
+  (cond ((and (listp range)
+	      (<= (car range) address (1- (cdr range))))
+	 range)
+	((and (numberp range)
+	      (<= range address))
+	 range)))
 
 (defun decode-instruction (instr nib2 nib3 nib4)
   "Parses the argument nibbles for a given instruction.
