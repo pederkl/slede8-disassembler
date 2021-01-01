@@ -71,12 +71,11 @@ to OUTPUT-STREAM (default stdout).  If INCLUDE-ADDRESS-IN-OUTPUT is non-NIL,
 the address of each instruction (in hex) is printed at the beginning of each
 line.  FORCE-DATA-RANGES is a list of elements where each element is either a
 pair of addresses (<lower-inclusive> . <upper-exclusive>) or a single
-address <lower-inclusive> (with an implied upper bound of infinity),
-indicating ranges of addresses that have been manually determined to contain
-data, not code.  BYTE-TRANSFORMS is a list of elements (<range> . <transform>)
-where range is the same format as for FORCE-DATA-RANGES, and transform
-is a designator for a function with two parameters, the address and the byte,
-returning a byte."
+address, indicating ranges of addresses that have been manually determined to
+contain data, not code.  BYTE-TRANSFORMS is a list of elements
+(<range> . <transform>) where range is the same format as for
+FORCE-DATA-RANGES, and transform is a designator for a function with two
+parameters, the address and the byte, returning a byte."
   (let* ((s8-data (get-s8-byte-list filename byte-transforms)))
     (multiple-value-bind (instruction-stream labels)
 	(s8-disassemble s8-data force-data-ranges)
@@ -252,7 +251,7 @@ https://slede8.npst.no/"
 (defun address-in-ranges (address ranges)
   "Checks if ADDRESS falls within any of the RANGES.
 Each range in RANGES is either a pair (lower-inclusive . upper-exclusive)
-or a single address denoting the inclusive lower bound of an infinite range.
+or a single address.
 Returns non-NIL iff ADDRESS is part of any range."
   (loop for range in ranges
 	when (address-in-range address range)
@@ -262,19 +261,27 @@ Returns non-NIL iff ADDRESS is part of any range."
   "Returns the transform, if any, for the byte at address ADDRESS,
 according to the BYTE-TRANSFORMS list, which is a list of
 (<range> . <transform>) pairs."
-  (loop for transform in byte-transforms
-        when (address-in-range address (car transform))
-	  return (cdr transform)))
+  (let ((applicable-transforms
+	  (loop for transform in byte-transforms
+		when (address-in-range address (car transform))
+		     collect (cdr transform))))
+    (when applicable-transforms
+      #'(lambda (addr byte)
+	  (loop with result-byte = byte
+		for tr in applicable-transforms
+		do (setq result-byte (funcall tr addr result-byte))
+                finally
+		return result-byte)))))
 
 (defun address-in-range (address range)
   "Returns non-NIL iff ADDRESS falls within RANGE.
 RANGE is either a pair (lower-inclusive . upper-exclusive)
-or a single address denoting the inclusive lower bound of an infinite range."
+or a single address."
   (cond ((and (listp range)
 	      (<= (car range) address (1- (cdr range))))
 	 range)
 	((and (numberp range)
-	      (<= range address))
+	      (= range address))
 	 range)))
 
 (defun decode-instruction (instr nib2 nib3 nib4)
