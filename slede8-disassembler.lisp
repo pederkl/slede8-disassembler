@@ -130,6 +130,15 @@ detected labels, both in ascending address order."
 	     (handler-case
 		 (multiple-value-bind (instruction target-address target-type)
 		     (decode-instruction instr nib2 nib3 nib4)
+		   (when target-address
+                     (when (< (1- program-length) target-address)
+                       (signal 'invalid-address))
+		     (let* ((existing-label (car (rassoc target-address labels)))
+			    (label (or existing-label
+				       (format nil "~a~d" target-type (incf label-counter)))))
+		       (unless existing-label
+			 (push (cons label target-address) labels))
+		       (setf (second instruction) label)))
 		   (when data-array
 		     (push (append (list (- address (length data-array))
 					 '.data)
@@ -137,16 +146,7 @@ detected labels, both in ascending address order."
 			   program)
 		     (setq data-array nil))
 		   (push (cons address instruction) program)
-		   (incf address 2)
-		   (when target-address
-		     (when (< (1- program-length) target-address)
-		       (signal 'invalid-address))
-		     (let* ((existing-label (car (rassoc target-address labels)))
-			    (label (or existing-label
-				       (format nil "~a~d" target-type (incf label-counter)))))
-		       (unless existing-label
-			 (push (cons label target-address) labels))
-		       (setf (second instruction) label))))
+		   (incf address 2))
 	       (invalid-address ()
 		 ;; Tried to jump out of bounds, so this couldn't have
 		 ;; been an instruction after all, must be data
