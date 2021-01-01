@@ -307,7 +307,7 @@ and the NAME argument.  Arguments to the function will be
   nil)
 
 (def-decoder reg+byte
-  (list (format nil "r~d" nib2) nib3))
+  (list (format nil "r~d" nib2) (logior (ash nib4 4) nib3)))
 
 (def-decoder reg+regbyte
   (list (format nil "r~d" nib2)
