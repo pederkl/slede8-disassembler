@@ -32,5 +32,4 @@ original program.  So I made this.
 7. When you're happy, call the disassembler again, this time adding
    :include-address-in-output nil to the parameters.  The result
    should be copy/pasteable to https://slede8.npst.no/
-
-sdf
+   
